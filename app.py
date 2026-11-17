@@ -35,7 +35,7 @@ DEPARTMENT_NAMES = {
 
 
 def _clean_text(value: Any) -> str:
-    """Convert optional dataset values to clean strings without losing Thai text."""
+    """Convert an optional dataset value to a clean string, preserving Thai text."""
     if value is None:
         return ""
     if isinstance(value, float) and pd.isna(value):
@@ -44,7 +44,7 @@ def _clean_text(value: Any) -> str:
 
 
 def _normalize_interests(value: Any) -> list[str]:
-    """Handle interest lists, strings, and paragraph-like source values."""
+    """Convert research interests in different formats into a unique string list."""
     if isinstance(value, list):
         pieces = [_clean_text(item) for item in value]
     elif isinstance(value, (tuple, set)):
@@ -57,7 +57,7 @@ def _normalize_interests(value: Any) -> list[str]:
 
 
 def load_data(path: Path = DATA_PATH) -> tuple[list[dict[str, Any]], str]:
-    """Read JSON or CSV faculty records and return normalized profiles plus file hash."""
+    """Read JSON or CSV faculty records and return normalized profiles and file hash."""
     if not path.exists():
         raise FileNotFoundError(f"Faculty dataset was not found: {path}")
     raw_bytes = path.read_bytes()
@@ -79,7 +79,7 @@ def load_data(path: Path = DATA_PATH) -> tuple[list[dict[str, Any]], str]:
 
 
 def normalize_faculty_data(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Map the observed Chula dataset fields to one consistent schema."""
+    """Map faculty records to a consistent schema and remove duplicate identities."""
     normalized: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for row in records:
@@ -114,7 +114,7 @@ def normalize_faculty_data(records: list[dict[str, Any]]) -> list[dict[str, Any]
 
 
 def build_search_text(profile: dict[str, Any]) -> str:
-    """Build model input only from research information in the faculty dataset."""
+    """Combine a profile's research interests and description for model input."""
     interests = "; ".join(profile["research_interests"])
     description = profile["research_description"]
     return " ".join(part for part in (
@@ -123,15 +123,26 @@ def build_search_text(profile: dict[str, Any]) -> str:
     ) if part)
 
 
+def get_device() -> str:
+    """Choose CUDA, Apple MPS, or CPU based on the devices PyTorch can use."""
+    import torch
+
+    if torch.cuda.is_available():
+        return "cuda"
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 @st.cache_resource(show_spinner="Loading multilingual embedding model (first run may take a while)…")
 def load_embedding_model():
-    """Load the multilingual sentence embedding model once per Streamlit session."""
+    """Load the multilingual embedding model on the selected compute device."""
     from sentence_transformers import SentenceTransformer
-    return SentenceTransformer(EMBEDDING_MODEL_NAME, device="mps")
+    return SentenceTransformer(EMBEDDING_MODEL_NAME, device=get_device())
 
 @st.cache_data(show_spinner="Preparing faculty research profiles…")
 def generate_embeddings(profiles: list[dict[str, Any]], dataset_hash: str):
-    """Encode profile research text; the dataset hash invalidates cached vectors."""
+    """Encode searchable profile text and return profiles, texts, and vectors."""
     model = load_embedding_model()
     usable = [(profile, build_search_text(profile)) for profile in profiles]
     usable = [(profile, text) for profile, text in usable if text]
@@ -150,7 +161,7 @@ def generate_embeddings(profiles: list[dict[str, Any]], dataset_hash: str):
 
 def semantic_search(query: str, profiles: list[dict[str, Any]], profile_texts: list[str],
                     vectors, top_k: int) -> list[dict[str, Any]]:
-    """Retrieve the most similar research profiles using normalized cosine similarity."""
+    """Return the top matching profiles ranked by cosine similarity to the query."""
     if not query.strip() or not profiles:
         return []
     model = load_embedding_model()
@@ -168,11 +179,11 @@ def semantic_search(query: str, profiles: list[dict[str, Any]], profile_texts: l
 
 @st.cache_resource(show_spinner="Loading multilingual reranker…")
 def load_reranker():
-    """Load Qwen's multilingual research-profile reranker; caller handles failures."""
+    """Load Qwen's multilingual cross-encoder for ranking query-profile pairs."""
     from sentence_transformers import CrossEncoder
     return CrossEncoder(
         RERANKER_MODEL_NAME,
-        device="mps",
+        device=get_device(),
         prompts={
             "faculty_search": (
                 "Given a research topic, rank faculty research profiles by relevance."
@@ -183,7 +194,7 @@ def load_reranker():
 
 
 def rerank_candidates(query: str, candidates: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool, str]:
-    """Rerank query-profile pairs; return semantic order if model setup or inference fails."""
+    """Rerank candidates and report success, or keep their semantic order on failure."""
     if not candidates:
         return [], False, "No candidates to rerank."
     try:
@@ -198,13 +209,13 @@ def rerank_candidates(query: str, candidates: list[dict[str, Any]]) -> tuple[lis
 
 
 def _safe_url(value: str) -> bool:
-    """Accept only absolute HTTP(S) links from the dataset."""
+    """Check that a dataset link is an absolute HTTP or HTTPS URL."""
     parsed = urlparse(value)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
 def display_expert_card(result: dict[str, Any], rank: int, reranked: bool) -> None:
-    """Render a faculty card with source-backed research evidence and contact links."""
+    """Display one faculty match with research evidence, contact, and score."""
     profile = result["profile"]
     name = profile["name_en"] or profile["name_th"] or "Name not listed"
     if profile["name_en"] and profile["name_th"]:
@@ -234,7 +245,7 @@ def display_expert_card(result: dict[str, Any], rank: int, reranked: bool) -> No
 
 
 def render_dashboard(profiles: list[dict[str, Any]]) -> None:
-    """Show dataset coverage and an interactive department count chart."""
+    """Show profile coverage metrics and a chart of faculty by department."""
     total = len(profiles)
     with_interests = sum(bool(p["research_interests"] or p["research_description"]) for p in profiles)
     with_email = sum(bool(p["email"]) for p in profiles)
@@ -257,15 +268,25 @@ def render_dashboard(profiles: list[dict[str, Any]]) -> None:
 
 
 def main() -> None:
-    """Build the Streamlit interface and run search only after explicit submission."""
+    """Build the Streamlit app, apply filters, and run submitted faculty searches."""
     st.set_page_config(page_title="Chula Engineering Expert Finder", page_icon="🔎",
                        layout="wide", initial_sidebar_state="expanded")
     st.markdown("""
     <style>
-      .stApp { background: #fff; }
-      [data-testid="stHeader"] { background: rgba(255,255,255,.92); }
-      h1, h2, h3 { color: #8f1745; }
-      .hero { padding: 1.25rem 1.5rem; border-radius: 16px; background: linear-gradient(110deg,#fff7fa,#fff); border: 1px solid #f2dce5; }
+      .stApp {
+        background: var(--background-color);
+        color: var(--text-color);
+      }
+      [data-testid="stHeader"] {
+        background: color-mix(in srgb, var(--background-color) 90%, transparent);
+      }
+      h1, h2, h3 { color: var(--primary-color); }
+      .hero {
+        padding: 1.25rem 1.5rem;
+        border-radius: 16px;
+        background: color-mix(in srgb, var(--primary-color) 8%, var(--secondary-background-color));
+        border: 1px solid color-mix(in srgb, var(--primary-color) 24%, var(--secondary-background-color));
+      }
     </style>
     """, unsafe_allow_html=True)
     st.markdown('<div class="hero">', unsafe_allow_html=True)
