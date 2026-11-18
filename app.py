@@ -25,7 +25,7 @@ from urllib.parse import urlparse
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.metrics.pairwise import cfosine_similarity
 
 
 # =============================================================================
@@ -423,10 +423,6 @@ def _groq_json(client, instructions, payload, schema_name, schema, strict):
         response_format = {"type": "json_object"}
 
     extra_options = {}
-    if model_name.startswith("openai/gpt-oss"):
-        # Less reasoning leaves room for the answer; long reasoning can end in empty output.
-        extra_options["reasoning_effort"] = "low"
-
     response = client.chat.completions.create(
         model=model_name,
         messages=[
