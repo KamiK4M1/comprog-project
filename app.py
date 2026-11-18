@@ -176,12 +176,15 @@ def get_departments(profiles):
     return sorted({profile["department"] for profile in profiles if profile["department"]})
 
 
-def filter_profile_indices(profiles, department, require_research):
-    """Return the list positions of profiles that pass the sidebar filters."""
+def filter_profile_indices(profiles, selected_departments, require_research):
+    """Return the list positions of profiles that pass the sidebar filters.
+
+    An empty `selected_departments` list means every department is included.
+    """
     # Positions are used instead of professor_id because some IDs are empty.
     return {
         profile_index for profile_index, profile in enumerate(profiles)
-        if (department == ALL_DEPARTMENTS or profile["department"] == department)
+        if (not selected_departments or profile["department"] in selected_departments)
         and (not require_research or has_research_data(profile))
     }
 
@@ -728,10 +731,12 @@ def render_header():
 
 
 def render_sidebar(departments):
-    """Show search settings; return (department, top_k, require_research)."""
+    """Show search settings; return (selected_departments, top_k, require_research)."""
     with st.sidebar:
         st.header("Search settings")
-        department = st.selectbox("Department", [ALL_DEPARTMENTS, *departments])
+        # Leaving the box empty searches every department.
+        selected_departments = st.multiselect("Departments", departments,
+                                              placeholder=ALL_DEPARTMENTS)
         top_k = st.slider("Number of results", min_value=1, max_value=20, value=8)
         require_research = st.checkbox("Exclude profiles without research-interest data", value=True)
         st.caption("Both English and Thai queries are supported.")
@@ -740,7 +745,7 @@ def render_sidebar(departments):
         if _get_groq_api_key():  # privacy notice: data will be sent to Groq
             st.caption(f"When you search, your topic and the top {ADVISOR_MAX_EXPERTS} matched "
                        "profiles are sent to Groq.")
-    return department, top_k, require_research
+    return selected_departments, top_k, require_research
 
 
 def render_search_form():
@@ -753,7 +758,7 @@ def render_search_form():
         query = st.text_area("Describe a research topic or technical problem",
                              value=selected_topic, height=110,
                              placeholder="For example: machine learning for flood prediction")
-        submitted = _stretch(st.form_submit_button, "Find relevant faculty", type="primary")
+        submitted = _stretch(st.form_submit_button, "Find relevant advisors", type="primary")
     return query, submitted
 
 
@@ -777,9 +782,9 @@ def render_about():
         """)
 
 
-def run_search(query, profiles, dataset_hash, department, top_k, require_research):
+def run_search(query, profiles, dataset_hash, selected_departments, top_k, require_research):
     """Filter -> retrieve -> rerank -> advise -> show result cards."""
-    allowed = filter_profile_indices(profiles, department, require_research)
+    allowed = filter_profile_indices(profiles, selected_departments, require_research)
     if not allowed:
         st.info("No faculty profiles match the selected filters.")
         return
@@ -822,14 +827,14 @@ def main():
 
     with st.expander("Dataset overview", expanded=True):
         render_dashboard(profiles)
-    department, top_k, require_research = render_sidebar(get_departments(profiles))
+    selected_departments, top_k, require_research = render_sidebar(get_departments(profiles))
     query, submitted = render_search_form()
 
     # Streamlit reruns the whole script on every interaction; search only on submit.
     if submitted and not query.strip():
         st.warning("Enter a research topic before searching.")
     elif submitted:
-        run_search(query, profiles, dataset_hash, department, top_k, require_research)
+        run_search(query, profiles, dataset_hash, selected_departments, top_k, require_research)
     render_about()
 
 
